@@ -1,0 +1,1596 @@
+---
+title: "Larval_Fish_Code"
+author: "Sarah Roberts, Sarah Weisberg, Laura Gruenburg"
+output: html_document
+date: "2024-03-01"
+---
+All of the data and code required to reproduce Weisberg et al 2024
+
+#0 Prep
+  load your packages and data for analysis 
+ 
+```{r}
+#spatial analysis
+library(sf) #r spatial package
+library(sp) #r spatial package
+library(spatialEco) #more advanced GIS
+library(rnaturalearth) #simple spatial data 
+library(marmap) #bathymetric data
+
+#plotting
+library(ggplot2) 
+library(ggthemes) 
+library(ggcorrplot)
+library(ggpubr)
+library(patchwork)
+library(ggpmisc)
+library(gridExtra)
+library(rmapshaper)
+library(RColorBrewer)
+
+#data wrangling
+library(lubridate) #dates
+library(dplyr) #tidy 
+library(tidyverse) #tidy
+library(zoo) #ordering
+library(broom) #converts to tidy 
+library(readxl) #reading 
+
+#modeling
+library(ggfortify) #pca analysis
+library(rstatix) #modeling with tidy
+library(tweedie) #tweedie distribution
+library(glmmTMB)#mixed models 
+
+
+
+#load in countries for plotting 
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+#set overall theme 
+
+theme_Publication <- function(base_size=10, base_family="Arial") {
+  
+  (theme_foundation(base_size=base_size, base_family=base_family)
+   + theme(plot.title = element_text(hjust = 0.5),
+           text = element_text(),
+           panel.background = element_rect(colour = NA),
+           plot.background = element_rect(colour = NA),
+           panel.border = element_rect(colour = NA),
+           axis.title = element_text(size = rel(1)),
+           axis.title.y = element_text(angle=90,vjust =2),
+           axis.text = element_text(), 
+           axis.line = element_line(colour="black"),
+           axis.ticks = element_line(),
+           panel.grid.major = element_line(colour="#f0f0f0"),
+           panel.grid.minor = element_blank(),
+           legend.key = element_rect(colour = NA),
+           legend.position = "right",
+           legend.spacing  = unit(0, "cm"),
+           legend.title = element_text(face="italic"),
+           strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0")
+   ))
+  
+}
+
+select <- dplyr::select
+```
+load in the data 
+```{r}
+ecomon <- read.csv("data/EcoMon_Plankton_Data_v3_7-Data.csv")
+```
+
+
+Convert date to a date column using lubridate
+```{r}
+#convert data and create year, month, day columns: 
+
+ecomon$date <- as.Date(ecomon$date, format =  "%d-%b-%y") #b here is the code for month when its words 
+ecomon$month <- month(ecomon$date)
+ecomon$year <- year(ecomon$date)
+ecomon$day <- day(ecomon$date)
+
+ecomon$ID_points <- as.character(rownames(ecomon))
+```
+
+
+
+#1 combine with the strata dataset 
+the ecomon data is collected as abundance per m2 and collected within each stratum every two months, so we need to know the stratum area to get out raw average abundance. Some strata are sampled more than once a cruise
+
+average abd/m2 per stratum * area of each stratum = raw abundance
+
+##1.1 stratum data 
+plot the stratum data and points 
+```{r}
+#load stratum
+stratum <- read_sf("data/EcomonStrata_v4b.shp")
+
+#you may have a validity issue - can check with sf::st_is_valid()
+stratum <- sf::st_buffer(stratum, 0)
+
+#plot three different ways to get a sense of what it looks like
+plot(stratum)
+plot(st_geometry(stratum), col = sf.colors(12, categorical = TRUE), border = 'grey', 
+     axes = TRUE)
+
+plot(stratum["Name"], col = sf.colors(12, categorical = TRUE), border = 'grey', 
+     axes = TRUE)
+
+st_crs(stratum) = 4326 #this is WGS 1984
+
+#make ecomon spatial with the same defined coordinate system
+ecomon_sp <- st_as_sf(x = ecomon, 
+                      coords = c("lon", "lat"),
+                      crs = 4326)
+
+
+
+#checkit that the stratum and ecomon data overlap with ggplot
+ggplot() + geom_sf(data = world) + 
+  geom_sf(data = stratum, fill = NA, colour = "red") + 
+  geom_sf(data = subset(ecomon_sp, ecomon_sp$year ==1997), size = .2) + 
+  coord_sf(xlim=c(-80, -65), ylim=c(34,46), expand = TRUE)+ 
+  theme(panel.background = element_rect(fill = "white", colour = "black"),
+        legend.title=element_blank())+ labs(y = element_blank(), x = element_blank(),
+                                            plot.title = element_text(hjust = 0.5))+ theme(legend.position="bottom", 
+                                                                                           legend.title = element_blank())+ guides(colour = guide_legend(override.aes = list(size=6))) + 
+  ggtitle("Ecomon Data", subtitle ="1997")
+
+
+#we will be using type down the road so lets plot that to see what it looks like 
+ggplot() + geom_sf(data = world) + 
+  geom_sf(data = stratum, aes(fill = Type))  + 
+  coord_sf(xlim=c(-80, -65), ylim=c(34,46), expand = TRUE)+ 
+  theme(panel.background = element_rect(fill = "white", colour = "black"),
+        legend.title=element_blank())+ labs(y = element_blank(), x = element_blank(),
+                                            plot.title = element_text(hjust = 0.5))+ theme(legend.position="bottom", 
+                                                                                           legend.title = element_blank())+ guides(colour = guide_legend(override.aes = list(size=6))) + 
+  ggtitle("Ecomon Data", subtitle ="Type")
+
+#make sure the stratum area information is valid 
+ggplot() + geom_sf(data = world) + 
+  geom_sf(data = stratum, aes(fill = Area)) + 
+  geom_sf(data = subset(ecomon_sp, ecomon_sp$year ==1997), size = .2) + 
+  coord_sf(xlim=c(-80, -65), ylim=c(34,46), expand = TRUE)+ 
+  theme(panel.background = element_rect(fill = "white", colour = "black"),
+        legend.title=element_blank())+ labs(y = element_blank(), x = element_blank(),
+                                            plot.title = element_text(hjust = 0.5))+ theme(legend.position="bottom", 
+                                                                                           legend.title = element_blank())+ guides(colour = guide_legend(override.aes = list(size=6))) + 
+  ggtitle("Ecomon Data", subtitle ="Area")
+
+
+
+
+```
+Type = Strata description, C = coastal, IS = inner-shelf, MS = mid-shelf, SB = shelf
+break, Bank = bank, Off = off-shelf, Basin = deep basin
+
+
+##1.2 extract stratum values to points
+note - there are 270 points that are outside of the strata 
+```{r}
+#get a spherical geometry error - need to follow these steps or use sf_use_s2(FALSE): https://stackoverflow.com/questions/68478179/how-to-resolve-spherical-geometry-failures-when-joining-spatial-data
+sf::sf_use_s2(FALSE)
+
+#intersection 
+ecomon_extract <- st_intersection(ecomon_sp, stratum)
+
+inside_test <- ecomon_extract
+inside_test$inside <- "yes"
+
+#make sure those points that we lost were actually outside of the study region 
+diff_test <- left_join(ecomon, inside_test, by = "ID_points")
+
+ggplot() + geom_sf(data = world) + 
+  geom_sf(data = stratum, fill = NA, colour = "red") + 
+  geom_point(data = subset(diff_test, is.na(diff_test$inside)), size = .2, aes(x = lon, y = lat)) + 
+  coord_sf(xlim=c(-80, -65), ylim=c(34,46), expand = TRUE)+ 
+  theme(panel.background = element_rect(fill = "white", colour = "black"),
+        legend.title=element_blank())+ labs(y = element_blank(), x = element_blank(),
+                                            plot.title = element_text(hjust = 0.5))+ theme(legend.position="bottom", 
+                                                                                           legend.title = element_blank())+ guides(colour = guide_legend(override.aes = list(size=6))) + 
+  ggtitle("Ecomon Data", subtitle ="these points are outside")
+
+#this tells us that 270 points are outside of the strata
+
+
+#get out the coordinate information 
+ecomon_coords <- ecomon_extract %>% st_coordinates() 
+ecomon_extract <- cbind(ecomon_extract, ecomon_coords)
+
+#convert it to a data frame because we will be doing calculations down the road that will slow down if the geometry is still there 
+ecomon_extract <- ecomon_extract %>% st_drop_geometry()
+ecomon_extract <- ecomon_extract %>% dplyr::rename(lon = X, lat = Y) #rename for later 
+
+
+#plotit to make sure all of the overlapping ecomon points are colored by stratum
+ggplot() + geom_sf(data = world) + 
+  geom_sf(data = stratum, fill = NA, aes(group = as.factor(Name), colour = as.factor(Name))) + #adding in group = Name makes ggplot know how to group the spatial object
+  geom_point(data = subset(ecomon_extract, ecomon_extract$year ==1997), aes(x = lon, y = lat, colour = as.factor(Name)), size = .2) + 
+  coord_sf(xlim=c(-80, -65), ylim=c(34,46), expand = TRUE)+ 
+  theme(panel.background = element_rect(fill = "white", colour = "black"),
+        legend.position="bottom",
+        legend.title=element_blank(),
+        plot.title = element_text(hjust = 0.5)) + 
+  labs(y = element_blank(), x = element_blank()) + 
+  ggtitle("Ecomon Data", subtitle ="1997")+ guides(color = guide_legend(override.aes = list(size = 0.5))) + guides(col = guide_legend(nrow = 2))
+
+
+
+
+ggplot() + geom_sf(data = world) + 
+  geom_sf(data = stratum, fill = NA, colour = "red") + 
+  geom_sf(data = ecomon_sp, size = .2) + 
+  coord_sf(xlim=c(-80, -65), ylim=c(34,46), expand = TRUE)+ 
+  theme(panel.background = element_rect(fill = "white", colour = "black"),
+        legend.title=element_blank())+ labs(y = element_blank(), x = element_blank(),
+                                            plot.title = element_text(hjust = 0.5))+ theme(legend.position="bottom", 
+                                                                                           legend.title = element_blank())+ guides(colour = guide_legend(override.aes = list(size=6))) + 
+  ggtitle("Ecomon Data", subtitle ="all")
+
+```
+
+#2 tidy the data
+now that we have a beautiful dataset, lets tidy it up.
+
+Here we convert NAs to true 0s, create a season column based on two month periods, and select only data after 1998. The processing of ichthyoplankton from the EcoMon cruises only began in 1999, after the end of GLOBEC, but in recent years selected cruises from the earlier period have been processed (https://doi.org/10.1093/icesjms/fsp276)
+
+##2.1 adding columns
+```{r}
+ecomon_extract[ecomon_extract == 9999] <- NA
+
+#first split out x (environment) and y (species) to convert NAs to true 0s (because it is a survey)
+ecomon_x <- ecomon_extract[c(1:12, 288:ncol(ecomon_extract))]
+ecomon_y <- ecomon_extract[197:241]
+ecomon_y[is.na(ecomon_y)] <- 0 #NAs should be true 0s
+
+ecomon <- cbind(ecomon_x, ecomon_y)
+rm(ecomon_extract, ecomon_sp) #clean up our environment
+
+ecomon <- ecomon %>% dplyr::filter(year > 1998) #only use data after 1998 
+
+ecomon_ynames <- colnames(ecomon_y)
+
+#create season column based on 2 month period
+ecomon$season <- ifelse(ecomon$month == 1 | ecomon$month == 2, "JanFeb", ifelse(ecomon$month == 3 | ecomon$month == 4, "MarApril",ifelse(ecomon$month == 5 | ecomon$month == 6, "MayJun",ifelse(ecomon$month == 7 | ecomon$month == 8, "JulAug",ifelse(ecomon$month == 9 | ecomon$month == 10, "SepOct",ifelse(ecomon$month == 11 | ecomon$month == 12, "NovDec", NA))))))
+
+#get rid of points that weren't in a stratum 
+ecomon <- ecomon %>% drop_na(Name)
+
+```
+
+
+
+##2.2 create long dataset 
+for tidy manipulation 
+```{r}
+ecomon_long <- ecomon %>% pivot_longer(all_of(ecomon_ynames), names_to = "spp")
+```
+
+###2.2.1 week sensitivity
+```{r}
+#create week column
+ecomon_long$weekyear <- strftime(ecomon_long$date, format = "%Y-%V")
+
+#for one species/region/type plot abundance by year/week interpolated 
+#diaspp MAB SB 
+#diaspp SNE MS
+
+testdat <- ecomon_long %>% filter(spp == "diaspp_10m2" & Region == "MAB" & Type == "SB" & year == 2000)
+
+
+testdat <- testdat %>% group_by(weekyear, Name, spp, Region, Type, Area) %>% dplyr::summarise(value = mean(value)) %>% mutate(value = value*Area)
+
+#get rid of strata grouping 
+testdat1 <- testdat %>% group_by(weekyear, spp, Region, Type) %>% dplyr::summarise(value = mean(value))
+
+testdat1 %>% ggplot(aes(x = weekyear, y = value)) + geom_point() 
+
+testdat2 <- as.data.frame(matrix(nrow = 52, ncol = 1))
+colnames(testdat2) <- "weekyear"
+testdat2$weekyear <- paste(2000, 1:52, sep = "-")
+
+
+testdat2 <- left_join(testdat2, testdat1, by = "weekyear")
+testdat2$weekyear <- 1:52
+testdat2 %>% ggplot(aes(x = weekyear, y = value)) + geom_point() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+scale_x_continuous(breaks = seq(1, 52, by = 1)) + geom_smooth(method = "loess") + ggtitle("diaspp, MAB, SB, 2000 with a loess smoother")
+
+#try our 2-month grouping
+testdat <- ecomon_long %>% filter(spp == "diaspp_10m2" & Region == "MAB" & Type == "SB"& year == 2000)
+#create a month proxy 
+testdat$month_proxy <- ifelse(testdat$season == "JanFeb", 1, ifelse(testdat$season == "MarApril", 2,ifelse( testdat$season == "MayJun",3, ifelse(testdat$season == "JulAug",4, ifelse(testdat$season == "SepOct", 5,ifelse(testdat$season == "NovDec", 6, NA))))))
+
+testdat$yearmon <- make_date(testdat$year, testdat$month_proxy)
+
+
+testdat <- testdat %>% group_by(yearmon, Name, spp, Region, Type, Area) %>% dplyr::summarise(value = mean(value)) %>% mutate(value = value*Area)
+
+#get rid of strata grouping 
+testdat <- testdat %>% group_by(yearmon, spp, Region, Type) %>% dplyr::summarise(value = mean(value))
+
+testdat %>% ggplot(aes(x = yearmon, y = value)) + geom_point() 
+
+testdat1 <- testdat %>% select()
+
+
+
+```
+survey per region type how many non-zero if you do weekly vs. bi-monthly 
+
+```{r}
+fullcov_week = 52* (max(ecomon$year)- min(ecomon$year)+1)
+
+fullcov_bimon = 6* (max(ecomon$year)- min(ecomon$year)+1)
+
+week <- ecomon %>% select(date, Region, Type)
+#create week column
+week$weekyear <- strftime(week$date, format = "%Y-%V")
+
+week <- week %>% select(Region, Type, weekyear) %>% distinct() %>% group_by(Region, Type) %>% tally()
+week$prop <- week$n/fullcov_week
+mean(week$prop)
+
+
+bimon <- ecomon %>% select(season, year, Region, Type)
+#create week column
+bimon$month_proxy <- ifelse(bimon$season == "JanFeb", 1, ifelse(bimon$season == "MarApril", 2,ifelse( bimon$season == "MayJun",3, ifelse(bimon$season == "JulAug",4, ifelse(bimon$season == "SepOct", 5,ifelse(bimon$season == "NovDec", 6, NA))))))
+
+bimon$yearmon <- make_date(bimon$year, bimon$month_proxy)
+
+
+
+bimon <- bimon %>% select(Region, Type, yearmon) %>% distinct() %>% group_by(Region, Type) %>% tally()
+bimon$prop <- bimon$n/fullcov_bimon
+mean(bimon$prop)
+
+write.csv(bimon, "tables/bimon_review.csv")
+write.csv(week, "tables/week_review.csv")
+```
+
+
+##2.3 Filter rare species 
+remove any spp+ region + type combo that has <5% of that year's species-specific abd (species-specific)
+this gives us the unique ID to remove in the bootstrapping 
+```{r}
+
+#First get abundance per stratum by calculating the average abundance per m2 within each season, year, species and unique stratum (Name), then multiply that by the area of each stratum 
+ecomon_grouped_long <- ecomon_long %>% group_by(season, Name, spp, year, Region, Type, Area) %>% dplyr::summarise(value = mean(value)) %>% mutate(value = value*Area) 
+
+
+#Summarize abd/stratum by region and type
+ecomon_grouped_long <- ecomon_grouped_long %>% group_by(season, spp, year, Region, Type) %>% dplyr::summarise(value = mean(value)) 
+
+
+#get out species specific total abundance 
+prop1 <- ecomon_grouped_long
+prop1 <- prop1 %>% distinct() %>% group_by(spp) %>% dplyr::summarise(total_abd_spp = sum(value)) %>% dplyr::filter(spp != "anaspp_10m2") #this species has 0 total abundance, cant div by 0
+ecomon_grouped_long <- left_join(ecomon_grouped_long, prop1, by = "spp")
+
+
+#get out specific abundance total abundance by region and type
+prop2 <- ecomon_grouped_long
+prop2 <- prop2  %>% distinct() %>% group_by(spp, Region, Type) %>% dplyr::summarise(abd_spp_region_type = sum(value)) %>% dplyr::filter(spp != "anaspp_10m2") #this species was 0, cant div by 0
+
+ecomon_grouped_long <- left_join(ecomon_grouped_long, prop2, by = c("spp", "Region", "Type"))
+
+#divide abundance per region type by total abundance
+ecomon_grouped_long$prop <-  ecomon_grouped_long$abd_spp_region_type/ecomon_grouped_long$total_abd_spp
+
+#select out species + region + type combos that have greater than 5% of total species-level abundance 
+combo_to_use <- ecomon_grouped_long %>% dplyr::filter(prop > .05)
+
+#creates a unique id for those species 
+combo_to_use$use_me_ID <- paste(combo_to_use$spp, combo_to_use$Region, combo_to_use$Type, sep = "_")
+use_ids <- unique(combo_to_use$use_me_ID)
+
+```
+
+
+
+
+##2.4 yeabin Sensitivity 
+create a moving window of yearbins to calculate ct (outside of the bootstrap) to make sure one year isn't changing everything 
+```{r}
+bin_frame <- as.data.frame(matrix(nrow = 20, ncol = 2))
+colnames(bin_frame) <- c("year", "wind1")
+bin_frame$year <- 1999:2018
+bin_frame$wind1 <- rep(1:5, each = 4)
+bin_frame <- rbind(bin_frame, c(2019,5))
+
+bin_frame$wind2 <- NA
+
+bin_frame[2:nrow(bin_frame), 3] <- rep(1:5, each = 4)
+
+bin_frame$wind3 <- NA
+
+bin_frame[3:(nrow(bin_frame)-3), 4] <- rep(1:4, each = 4)
+
+bin_frame$wind4 <- NA
+
+bin_frame[4:(nrow(bin_frame)-2), 5] <- rep(1:4, each = 4)
+
+bin_frame$wind5 <- NA
+
+bin_frame[5:(nrow(bin_frame)-1), 6] <- rep(1:4, each = 4)
+
+bin_frame$wind6 <- NA
+
+bin_frame[6:nrow(bin_frame), 7] <- rep(1:4, each = 4)
+
+bin_long <- bin_frame %>% pivot_longer(wind1:wind6, names_to = "window", values_to = "yearbin")
+
+ecomon_long <- left_join(ecomon_long, bin_long, by = "year")
+
+```
+
+##2.5 create unique towID = cruise_name + Station and month proxy 
+```{r}
+ecomon_long$towID <- paste(ecomon_long$cruise_name, ecomon_long$station, sep = "_")
+```
+
+create wide dataset for bootstrapping as well as a month_proxy for ct calculation 
+```{r}
+#work off of wide data so not biasing sample to tows that have more species
+ecomon_wide <- ecomon_long %>% pivot_wider(names_from = spp, values_from = value)
+
+#create a month proxy 
+ecomon_wide$month_proxy <- ifelse(ecomon_wide$season == "JanFeb", 1, ifelse(ecomon_wide$season == "MarApril", 2,ifelse( ecomon_wide$season == "MayJun",3, ifelse(ecomon_wide$season == "JulAug",4, ifelse(ecomon_wide$season == "SepOct", 5,ifelse(ecomon_wide$season == "NovDec", 6, NA))))))
+```
+
+#3 Bootstrapping
+This takes a while so it is commented out. Just load in the bootstrapped data here: 
+```{r}
+
+ecomon_boot <- read.csv(file = gzfile("data/bootstrapped.csv.gz"))
+
+
+```
+
+the bootstrapping procedure does the following:
+1. loops through each of the yearbins
+2. selects only that yearbin
+3. selects a random sample with replacement (the same size as yearbin dataset)
+4. calculates abundance per stratum
+5. filters out rare species+region+type combos 
+6. calculates central tendency of abundance - this is the abundance-weighted month_proxy of their abundance - i.e when are they most abundant? 
+
+
+WARNING! THIS TAKES A WHILE TO RUN - just load the data if you want to skip this step. I am commenting it out so you can run the whole code, but it is an important step in the analysis that needs to be run, but please please only run it once or you may end up hating me.  
+```{r}
+# ecomon_boot_mid <- as.data.frame(matrix(nrow =0, ncol = 4))
+# ecomon_boot <- as.data.frame(matrix(nrow =0, ncol = 4))
+# colnames(ecomon_boot_mid) <- c("use_me_ID", "yearbin", "window", "ct")
+# colnames(ecomon_boot) <- c("use_me_ID", "yearbin", "window", "ct")
+# 
+# boot_rep <- 1000
+# id_length <- length(unique(ecomon_wide$towID))
+# id_use <- unique(ecomon_wide$towID)
+# 
+# 
+# window_length <- length(unique(ecomon_wide$window))
+# windows <- unique(ecomon_wide$window)
+# 
+# for(i in 1:window_length) { 
+#   window_use <- windows[i]
+#   newdat1 <- ecomon_wide %>% filter(window == window_use)
+#   newdat1 <- newdat1 %>% drop_na(yearbin)
+#   yearbin_length <- length(unique(newdat1$yearbin))
+#   
+# for(n in 1:yearbin_length) {
+#   for(i in 1:boot_rep) { 
+#   newdat <- newdat1 %>% filter(yearbin == n) #select out ecomon data in one yearbin
+#   dim <- nrow(newdat) #find number of rows in that dataset
+#   rownums <- sample(1:dim, dim,replace = T) #100 tows per cruise, 6 cruises year year, 4 years per yearbin, this should be 
+#   resamp <- newdat[rownums,] #resample data to get a bootsrapped estimate
+#   
+#   #make it long 
+#   resamp_long <- resamp %>% pivot_longer(all_of(ecomon_ynames), names_to = "spp")
+# 
+#   #calculate abundance using stratum on the resampled data - value is abundance per m2, multiply that by stratum area to get abundance per stratum
+#   resamp_long <- resamp_long %>% group_by(month_proxy, Name, spp, yearbin, window, Region, Type, Area) %>% dplyr::summarise(value = mean(value)) %>% mutate(value = value*Area)
+#   
+#  #filter out spp + region + type combos with <5% of total abundance from above
+#   resamp_long$use_me_ID <- paste(resamp_long$spp, resamp_long$Region, resamp_long$Type, sep = "_")
+#   resamp_long <- resamp_long %>% dplyr::filter(use_me_ID %in% use_ids)
+#   
+#  for(u in 1:length(use_ids)) { 
+#   boot_id <- use_ids[u]
+#   resamp_long_ct <- resamp_long %>% dplyr::filter(use_me_ID == boot_id)
+#   #central tend calculation 
+#   resamp_long_ct$mx <- resamp_long_ct$month_proxy*resamp_long_ct$value
+#   resamp_long_ct$ct <- (sum(resamp_long_ct$mx))/(sum(resamp_long_ct$value))
+#   new_ct <- resamp_long_ct %>% ungroup() %>% dplyr::select(use_me_ID, yearbin, window, ct) %>% distinct()
+#   ecomon_boot_mid[u,] <- new_ct
+#   }
+#    ecomon_boot <- rbind(ecomon_boot_mid, ecomon_boot)
+#   }
+# }
+# }
+# 
+# 
+# 
+# #separate ID into meaningful information again 
+# ecomon_boot <- ecomon_boot %>% separate(use_me_ID, into = c("spp", "Unit", "Region", "Type"), sep = "_")
+# 
+# #Nan is when the abd was 0 for the entire yearbin (across all months) for one spp, region, type combo - remove 
+# ecomon_boot <- ecomon_boot %>% dplyr::filter(ct != "NaN") %>% dplyr::select(-Unit)
+# 
+# #calculate some summary statistics for the bootstrapped ct 
+# summary_ct <- ecomon_boot %>% group_by(spp, Region, Type, yearbin, window) %>% dplyr::summarise(n = length(ct), 
+#             mean_ct = mean(ct), 
+#             se_ct = sd(ct)/sqrt(n), 
+#             conf_interval05 = quantile(ct, probs=.025), 
+#             conf_interval95 = quantile(ct, probs=.975), 
+#             )
+#   
+# 
+# #calculate some summary statistics for the bootstrapped ct 
+# summary_ct <- ecomon_boot %>% group_by(spp, Region, Type, bin) %>% dplyr::summarise(n = length(ct), 
+#             mean_ct = mean(ct), 
+#             se_ct = sd(ct)/sqrt(n), 
+#             conf_interval05 = quantile(ct, probs=.025), 
+#             conf_interval95 = quantile(ct, probs=.975), 
+#             )
+# 
+# write.csv(ecomon_boot, file = gzfile("bootstrapped.csv.gz")) #this saves it as a zipped file
+# 
+# write.csv(summary_ct, "summary_ct_bootstrapped.csv")
+```
+##3.2 Examine the boot 
+###3.2.1 Remove wrappers
+Wrapper species are species that have high central tendency of abundance in the winter (i.e they wrap around the calendar year) - this gets complicated for calculating any trend in central tendency (because a species could go from having most of their abundance in january to most of their abundance in december and on a calendar that would look like a jump of 11 months, but in reality it is just one). For our analysis we will remove the "wrapper" species. 
+
+do you want remove wrapper species from the bootstrapped dataset? If so, run this line  
+get the wrapper info from original grouped data and run this if you want to do the analyses on the non-wrappers only 
+```{r}
+#create a month proxy 
+ecomon_grouped_long$month_proxy <- ifelse(ecomon_grouped_long$season == "JanFeb", 1, ifelse(ecomon_grouped_long$season == "MarApril", 2,ifelse( ecomon_grouped_long$season == "MayJun",3, ifelse(ecomon_grouped_long$season == "JulAug",4, ifelse(ecomon_grouped_long$season == "SepOct", 5,ifelse(ecomon_grouped_long$season == "NovDec", 6, NA))))))
+
+#wrappers are taken from original ecomon dataset
+ecomon_grouped_long_select <- ecomon_grouped_long %>% dplyr::filter(month_proxy == 6 | month_proxy == 1) %>%  dplyr::filter(value > 0) #get out the first and last months (janfeb and novdec)
+
+ecomon_grouped_long_select <- ecomon_grouped_long_select %>% group_by(spp, Region, Type) %>% summarise(avg = mean(month_proxy)) #take the average of those janfeb and novdec species 
+
+ecomon_grouped_long_select <- ecomon_grouped_long_select %>% dplyr::filter(avg !=1)   %>% dplyr::filter(avg !=6) #if the average is 1 or 6 then they have wrapped around the calendar year
+
+#remove those species from the bootstrapped dataset
+ecomon_grouped_long_select$wrapper_spp <- "yes"
+ecomon_grouped_long_select$spp <- sub("_[^_]+$", "", ecomon_grouped_long_select$spp)
+ecomon_grouped_long_select$wrapper_id <- paste(ecomon_grouped_long_select$spp, ecomon_grouped_long_select$Region, ecomon_grouped_long_select$Type, sep = "_")
+
+ecomon_boot$ID <- paste(ecomon_boot$spp, ecomon_boot$Region, ecomon_boot$Type, sep = "_")
+
+ecomon_boot <- ecomon_boot %>% filter(!ID %in% ecomon_grouped_long_select$wrapper_id)
+
+write.csv(ecomon_grouped_long_select, "data/wrappers.csv")
+```
+
+#4 Modeling Setup 
+Setting up to calculate variability in central tendency and add in environmental variables and habitat variables 
+
+##4.1 Variability 
+for each region, type, and species we want to caluclate variability in central tendency. We will do this two ways: 
+1) diff_ci: difference between the minimum and maximum confidence intervals - this is done on a dataset grouped by spp, region, type AND yearbin 
+2) se_ct: the standard error of ct - this is done on a dataset grouped by just spp, region and type
+```{r}
+
+summary_ct_nobin <- ecomon_boot %>% group_by(spp, Region, Type, window) %>% dplyr::summarise(n = length(ct), 
+            mean_ct = mean(ct), 
+            se_ct = sd(ct)/sqrt(n), 
+            conf_interval05 = quantile(ct, probs=.025), 
+            conf_interval95 = quantile(ct, probs=.975), 
+            diff_ci = conf_interval95 - conf_interval05
+            )
+
+variability <- summary_ct_nobin
+
+variability %>% ungroup() %>% anova_test(diff_ci ~ Type, detailed = T)
+variability %>% ungroup() %>% tukey_hsd(diff_ci ~ Type, detailed = T)
+
+
+
+variability %>% ggplot() + geom_boxplot(aes(x = window, y = diff_ci)) + facet_wrap(~Region + Type)
+
+aov_results1 <- variability %>% group_by(Region, Type) %>% anova_test(diff_ci ~ window, detailed = T)
+aov_results <- variability %>% group_by(Region, Type) %>% anova_test(se_ct ~ window, detailed = T)
+
+#GOM basin there is a diff but it isn't significant (in window 6)
+
+aov_supp <- variability %>% group_by(Region, Type) %>%  kruskal_test(diff_ci ~ window)
+write.csv(aov_supp, "tables/anova_window.csv")
+games_test <- variability %>% group_by(Region, Type) %>% games_howell_test(diff_ci ~ window, detailed = T)
+write.csv(games_test, "tables/post_hoc_window.csv")
+#games_test <- games_test %>% filter(p.adj < .05)
+
+
+supp <- variability %>% ggplot(aes(x = window, y = diff_ci)) + geom_boxplot() + facet_wrap(~Region + Type)+
+  stat_compare_means(method = "kruskal",
+                     label.x = 1.6, 
+                     label.y = 4.5) + theme_Publication()  + theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+
+supp
+
+ggsave(filename = "figures/supplement/window_comparison.png", plot=supp, width = 20, height=20, units=c("cm"), dpi=500)
+
+```
+This non-sig p value (close to 1) tells us that now matter how we split up the windows, variability in ct (diff_ci and se_ct) is the same - we can now just use one window (wind1 with the most data) and move forward with our analysis. 
+
+##4.2 Select out one window 
+now that we know our variability doesn't change based on the window, just use the one with the most data 
+```{r}
+variability <- variability %>% filter(window == "wind1")
+```
+
+calc ct stats for results section 
+```{r}
+summary(variability$mean_ct*2) #multiply by 2 to have consistent with paper 
+hist(variability$mean_ct*2)
+sd(variability$mean_ct*2)
+```
+
+##4.3 Combine data 
+combine the variability data with environmental and habitat data 
+
+###4.3.1 Environment 
+```{r}
+env_sum <- ecomon_wide  %>% group_by(Region, Type) %>% drop_na(btm_temp, sfc_temp, btm_salt, sfc_salt) %>% dplyr::summarise(
+            n_sum_bt = length(btm_temp), 
+            mean_bt = mean(btm_temp), 
+            se_bt = sd(btm_temp)/sqrt(n_sum_bt), 
+            conf_interval05_bt = quantile(btm_temp, probs=.025), 
+            conf_interval95_bt = quantile(btm_temp, probs=.975), 
+            diff_ci_bt = conf_interval95_bt - conf_interval05_bt, 
+            ct_bt = (sum(month_proxy*btm_temp))/(sum(btm_temp)),
+            
+            n_sum_sst = length(sfc_temp), 
+            mean_sst = mean(sfc_temp), 
+            se_sst = sd(sfc_temp)/sqrt(n_sum_sst), 
+            conf_interval05_sst = quantile(sfc_temp, probs=.025), 
+            conf_interval95_sst = quantile(sfc_temp, probs=.975), 
+            diff_ci_sst = conf_interval95_sst - conf_interval05_sst, 
+            ct_sst = (sum(month_proxy*sfc_temp))/(sum(sfc_temp)), 
+            
+            n_sum_bsal = length(btm_salt), 
+            mean_bsal = mean(btm_salt), 
+            se_bsal = sd(btm_salt)/sqrt(n_sum_bsal), 
+            conf_interval05_bsal = quantile(btm_salt, probs=.025), 
+            conf_interval95_bsal = quantile(btm_salt, probs=.975), 
+            diff_ci_bsal = conf_interval95_bsal - conf_interval05_bsal, 
+            ct_bsal = (sum(month_proxy*btm_salt))/(sum(btm_salt)),
+            
+            n_sum_ssal = length(sfc_salt), 
+            mean_ssal = mean(sfc_salt), 
+            se_ssal = sd(sfc_salt)/sqrt(n_sum_ssal), 
+            conf_interval05_ssal = quantile(sfc_salt, probs=.025), 
+            conf_interval95_ssal = quantile(sfc_salt, probs=.975), 
+            diff_ci_ssal = conf_interval95_ssal - conf_interval05_ssal, 
+            ct_ssal = (sum(month_proxy*sfc_salt))/(sum(sfc_salt)),
+            
+            
+            )
+
+
+env_var <- ecomon_wide  %>% group_by(Region, Type, yearbin) %>% drop_na(btm_temp, sfc_temp, btm_salt, sfc_salt) %>% dplyr::summarise(
+            ct_bt = (sum(month_proxy*btm_temp))/(sum(btm_temp)),
+            ct_sst = (sum(month_proxy*sfc_temp))/(sum(sfc_temp)), 
+            ct_ssal = (sum(month_proxy*sfc_salt))/(sum(sfc_salt)), 
+            ct_bsal = (sum(month_proxy*btm_salt))/(sum(btm_salt))
+            )
+
+env_var  <- env_var  %>% group_by(Region, Type) %>% dplyr::summarise(
+            n_bt = length(ct_bt),
+            mean_ct_bt = mean(ct_bt), 
+            se_ct_bt = sd(ct_bt)/sqrt(n_bt), 
+            n_sst = length(ct_sst),
+            mean_ct_sst = mean(ct_sst), 
+            se_ct_sst = sd(ct_sst)/sqrt(n_sst), 
+            n_bsal = length(ct_bsal),
+            mean_ct_bsal = mean(ct_bsal), 
+            se_ct_bsal = sd(ct_bsal)/sqrt(n_bsal), 
+            n_ssal = length(ct_ssal),
+            mean_ct_ssal = mean(ct_ssal), 
+            se_ct_ssal = sd(ct_ssal)/sqrt(n_ssal)
+            )
+
+env <- left_join(env_var, env_sum, by = c("Region", "Type"))
+
+env_long <- pivot_longer(env, cols=(n_bt:ct_ssal), names_to = c("measure", "env"), 
+                    names_pattern = '(.*)_(.*)$')
+
+env_long <- env_long %>% dplyr::filter(measure !="n" )
+
+env_long %>% mutate(env_2 = ifelse(env %in% c("ssal", "bsal"), "salinity", "temperature")) %>% filter(measure != "n_sum") %>% ggplot() + geom_boxplot(aes(x = env, y = value, colour = Region)) + facet_wrap(~measure + env_2, scales = "free_y")
+
+
+env_wide <- env_long %>% mutate(env_2 = ifelse(env %in% c("ssal", "bsal"), "salinity", "temperature")) %>% filter(measure != "n_sum", measure != "conf_interval05", measure != "conf_interval95") %>% pivot_wider(names_from = c("env", "measure"), values_from = "value")
+
+not_all_na <- function(x) any(!is.na(x))
+env_temp <- env_wide %>% dplyr::filter(env_2 == "temperature")%>% select_if(not_all_na)
+env_sal <- env_wide %>% dplyr::filter(env_2 == "salinity")%>% select_if(not_all_na)
+
+#smoosh that with the bootstrapped ct data 
+
+env_use <- env_long %>% dplyr::filter(measure %in% c("ct", "se_ct", "diff_ci", "mean", "se"))
+env_use <-  env_use %>% pivot_wider(names_from = c("env", "measure"), values_from = "value")
+
+##create a simple version called variability_use that has less information in it
+variability_use <- variability %>% dplyr::select(spp, Region, Type, se_ct, diff_ci, mean_ct)
+variability_use <- left_join(variability_use, env_use, by = c("Region", "Type"))
+
+```
+
+###4.3.2 Habitat 
+
+```{r}
+Spawn_Biol_FULL <- read_excel("data/SpawnBiolCONCISE.xlsx")
+
+
+```
+
+```{r}
+variability_use <- left_join(variability_use, Spawn_Biol_FULL, by = c("spp"))
+variability_use$adulthab <- ifelse(variability_use$spp == "cynreg", "demersal", ifelse(variability_use$spp == "syaspp", "benthic", ifelse(variability_use$spp == "ulvsub", "demersal", variability_use$adulthab)))
+
+```
+
+##4.4 Salinity intrusion  
+Add in salinity maximum intrusion - this is yes/no was there a salinity maximum in that profile 
+calculate percentage of casts that had a salinity maximum intrusion 
+```{r}
+smax <- read.csv("data/smax_extract_all_ECOMON.csv")
+
+smax <- smax %>% select(year, monthproxy, smax_yn, Region, Type) %>% rename(month_proxy = monthproxy, smax = smax_yn) #smax_yn is binary whether or not there was a salinity maximum intrusion
+
+#what is the temporal coverage of this 
+smax  %>% filter(month_proxy != 6 & month_proxy != 1) %>% ggplot(aes(x = year, fill = factor(month_proxy))) + geom_histogram(stat = "count") + facet_wrap(~Region + Type)
+
+smax %>% group_by(Region, Type) %>% ggplot(aes(x = Type, fill = Region)) + geom_histogram(stat = "count")
+
+#filter out overlapping years 
+smax <- smax %>% filter(year >= min(ecomon_long$year) & year <= max(ecomon_long$year))
+
+#calculate percentage of time (total casts by Region/Type) there was an smax 
+smax_casts <- smax %>% group_by(Region, Type) %>% summarise(casts = length(smax), pos_smax = sum(smax))
+
+smax_casts <- smax_casts %>% mutate(perc_smax = pos_smax/casts)
+
+
+#by year to plot
+smax_casts_an <- smax %>% group_by(Region, Type, year) %>% summarise(casts = length(smax), pos_smax = sum(smax))
+
+smax_casts_an <- smax_casts_an %>% mutate(perc_smax = pos_smax/casts)
+
+smax_casts_an%>%  ggplot(aes(x = year, y = perc_smax, colour = Region)) + geom_line() + facet_wrap(~Type)
+
+
+#summarize to get variability etc 
+
+smax_sum <- smax  %>% group_by(Region, Type) %>% dplyr::summarise(
+            n_sum_smax = length(smax), 
+            smax_mean = mean(smax), 
+            smax_se = sd(smax)/sqrt(n_sum_smax),
+            smax_ct = (sum(month_proxy*smax))/(sum(smax))) %>% unique()
+      
+
+write.csv(smax_sum, "data/smax_summarized.csv")
+variability_use <- left_join(variability_use, smax_sum, by = c("Region", "Type"))
+
+variability_use$Province <- variability_use$Type
+
+```
+
+#5 Figures 
+##5.1 Figure 1 study area 
+
+```{r}
+insert <- variability_use %>% ungroup() %>% select(spp, adulthab) %>% unique() %>% group_by(adulthab) %>% tally() %>% rename(`adult habitat` = adulthab)
+
+
+Region <- stratum %>% st_make_valid() %>% st_buffer(0) %>% group_by(Region) %>% summarize()
+
+#set color palette
+my_pal <- brewer.pal(n=6, "Set1")
+my_pal[3] <- "#FFFF33"
+my_pal[2] <- "#4DAF4A"
+my_pal[6] <- "#04b4e0"
+  
+Region <- ms_filter_islands(Region, min_area=10000000) #get rid of that weird one in the gulf of maine 
+
+# call in bathymetric data
+# convert  bathymetric contours into dataframe
+bathy <- getNOAA.bathy(-80, -65, 34, 46, resolution=1); bathydf <- as.xyz(bathy) 
+#ignore positive depth (land)
+bathy_sea <- bathydf; bathy_sea$V3[bathy_sea$V3 > 1] <- 0
+
+Figure1 <- ggplot() + geom_sf(data = world) + 
+  ggtitle("EcoMon Data")+ guides(color = guide_legend(override.aes = list(size = 0.5))) + 
+  guides(col = guide_legend(nrow = 2)) +#adding in group = Name makes ggplot know how to group the spatial object
+  geom_raster(data = bathy_sea, aes(x = V1, y = V2, fill = V3)) +
+  scale_fill_gradient(low="#586575", high="#daedf7",
+                      breaks=c(-1000,-3000,-5000), labels=c(1000,3000,5000))+
+  geom_sf(data = world) +
+  geom_point(data = ecomon, aes(x = lon, y = lat, colour = as.factor(Type)), size = .3) +
+    geom_sf(data = Region, fill = NA, linewidth = .5, colour = "black")  +
+  scale_colour_manual(values = my_pal, 
+                       limits = c("SB", "C", "MS", "BASIN", "IS", "BANK"), 
+                      labels = c("shelf break (SB)", "coastal (C)", "mid shelf (MS)", "basin", "inner shelf (IS)", "bank")) +
+  theme_Publication()+
+  labs(colour="Province")+
+  labs(x = NULL, y = NULL,fill= "Depth (m)") + 
+  theme(legend.position = "bottom",legend.box = "vertical") +
+  annotation_custom(tableGrob(insert, rows = NULL), xmin=-70, xmax=-66, ymin=35, ymax=37)+
+  # annotate("text", x = -71.5, y = 43, label = "GOM", size = 4)+
+  # annotate("text", x = -66, y = 41, label = "GB", size = 4)+
+  # annotate("text", x = -71, y = 39.5, label = "SNE", size = 4)+
+  # annotate("text", x = -77, y = 36.5, label = "MAB", size = 4)+
+  coord_sf(xlim=c(-80, -65), ylim=c(34,46), expand = FALSE) +
+  guides(colour = guide_legend(override.aes = list(size=10)))
+
+Figure1
+
+ggsave(filename = "figures/manuscript/Figure1.png", plot=Figure1, width = 20, height=20, units=c("cm"), dpi=1000)
+
+```
+
+
+
+##5.2 Figure 2 variability, linearity
+
+```{r}
+
+summary_ct <- ecomon_boot %>% group_by(spp, Region, Type, yearbin, ID) %>% dplyr::summarise(n = length(ct), 
+            mean_ct = mean(ct))
+
+
+
+Tab_1 <- summary_ct
+#is it linear?
+#linear model - loop through each spp, region type  
+
+res_glm <- data.frame(matrix(ncol=3, nrow=1))
+colnames(res_glm) <- c("ID", "p_value", "coef")
+
+IDs <- unique(Tab_1$ID)
+
+
+for (i in 1:length(IDs)) { #for each species in spec_list
+  data <- Tab_1 %>% filter(ID == IDs[i])
+  tryCatch({ fit <- lm(as.formula(paste("mean_ct ~ yearbin")), data=data)
+  res_glm[i,1] <- IDs[i]
+  res_glm[i,2] <- summary(fit)$coefficients[2,4]
+  res_glm[i,3] <- fit$coefficients[2]
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+
+
+res_glm <-  res_glm %>% separate(ID, into = c("spp", "Region", "Type"), sep = "_")
+
+res_glm$Region_Type <- paste(res_glm$Region, res_glm$Type, sep = "_")
+
+res_glm_sig <- res_glm %>% filter(p_value < .05) 
+res_glm_sig$coef_sign  <- ifelse(res_glm_sig$coef > 0, 1, 0)
+sum(res_glm_sig$coef_sign) #this is how many are positive and significant
+
+res_glm_sig$coef_sign  <- ifelse(res_glm_sig$coef > 0, "positive", "negative")
+#are they early or late spawners (i.e what is their mean_ct)
+res_glm_sig$ID <- paste(res_glm_sig$spp, res_glm_sig$Region, res_glm_sig$Type, sep = "_")
+summary_1 <- summary_ct %>% group_by(ID) %>% summarise(mean_ct = mean(mean_ct))
+res_glm_sig <- left_join(res_glm_sig, summary_1, by = "ID")
+res_glm_sig$mean_ct <- res_glm_sig$mean_ct*2
+
+hist(res_glm_sig$mean_ct)
+
+a <- res_glm_sig %>% ggplot() + geom_histogram(aes(x = mean_ct)) + facet_wrap(~coef_sign)+ labs(x = bquote(Mean[CT])) + theme_Publication()
+
+b <- res_glm_sig %>% ggplot() + geom_boxplot(aes(y = mean_ct, x = as.factor(coef_sign))) + labs(x = "coefficient sign", y = bquote(Mean[CT])) + theme_Publication()
+
+c <- a + b
+c
+ggsave(filename = "figures/supplement/supplement_variability.png", plot=c, width = 25, height=15, units=c("cm"), dpi=500)
+
+res_glm %>% filter(p_value < .05) %>% ggplot(aes(y = spp, x = Type, fill = coef)) + geom_tile() + facet_wrap(~Region, scales = "free_x")
+
+
+res_glm %>% ggplot(aes(y = spp, x = Type, fill = coef)) + geom_tile() + facet_wrap(~Region, scales = "free_x") +scale_fill_viridis_c()
+
+
+##is it variable? 
+variability_use %>% ggplot(aes(y = spp, x = Type, fill = diff_ci)) + geom_tile() + facet_wrap(~Region, scales = "free_x") +scale_fill_viridis_c(limits = c(0,3)) 
+
+res_glm$sig <- ifelse(res_glm$p_value >.05 | is.na(res_glm$p_value), "non-sig", "sig")
+
+Figure_2b <- res_glm %>% ggplot(aes(y = spp, x = Region, colour = sig, alpha = sig, fill = coef)) + geom_tile() +
+    scale_y_discrete(limits=rev)  + facet_wrap(~Type, scales = "free_x")+ ggtitle("Linearity") +
+  scale_fill_gradient2(low = "#0058a9", mid = "white", high = "#ff33cc", midpoint = 0)+ scale_color_manual(values = c("white", "black")) +theme_Publication()+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + guides(colour = FALSE) + theme(legend.position = "bottom", legend.box="vertical")+
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5, title = "coefficient"), alpha = guide_legend(title=NULL, title.hjust = 0.5)) +
+  scale_alpha_discrete(range = c(.2,1))+
+  theme(axis.title.y=element_blank())+ theme(text = element_text(size=20))
+
+variability_use$sig <- ifelse(variability_use$diff_ci == 0, "zero", "non-zero") 
+
+
+Figure_2c <- variability_use %>% mutate(diff_ci = diff_ci*2) %>% ggplot(aes(y = spp, x = Region, fill = diff_ci, alpha = sig, colour = sig)) +
+    scale_y_discrete(limits=rev) +
+  scale_alpha_discrete(range = c(1,.2)) + geom_tile() + facet_wrap(~Type, scales = "free_x") +scale_fill_viridis_c(limits = c(0,7), labels = c(">0", "2", "4", "6", "8")) + scale_color_manual(values = c("white", "black")) + ggtitle("Variability")+ theme_Publication()+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+ guides(color = FALSE) + theme(legend.position = "bottom", legend.box="vertical")+
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5, title = bquote(Range[CT])), alpha = guide_legend(title=NULL, title.hjust = 0.5))+
+  theme(axis.title.y=element_blank())+ theme(text = element_text(size=20))
+
+
+Figure_2a <- variability_use %>% mutate(mean_ct = mean_ct*2) %>% ggplot(aes(y = spp, x = Region, fill = mean_ct))+
+    scale_y_discrete(limits=rev)  + geom_tile() + facet_wrap(~Type, scales = "free_x") +scale_fill_viridis_c(option = "plasma", limits = c(1,12)) + scale_color_manual(values = c("white", "black")) + ggtitle("Timing")+ theme_Publication()+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+ guides(color = FALSE, alpha = FALSE) + theme(legend.position = "bottom")+
+  guides(fill = guide_colourbar(title.position="top", title.hjust = 0.5, title = bquote(Mean[CT]))) + labs(y = "taxon")+ theme(text = element_text(size=20))
+
+Figure_2 <- Figure_2a + Figure_2b + Figure_2c + plot_annotation(tag_levels = 'A')
+
+Figure_2
+
+ggsave(filename = "figures/manuscript/Figure2.png", plot=Figure_2, width = 40, height=45, units=c("cm"), dpi=500)
+```
+
+
+
+
+##5.3 Figure 3 GLM
+```{r}
+#with species as a random effect - glmer 
+#regular normal glm - we checked the distribution above and gaussian is okay (normal-ish residuals)
+specs <- variability_use %>% ungroup %>% dplyr::select(Region:smax_ct)
+specs <- colnames(specs)
+specs <- specs[specs != "diff_ci"]
+specs <- specs[specs != "species"]
+specs <- specs[specs != "name"]
+specs <- specs[specs != "n_sum_smax"]
+xnames <- specs
+
+dev_table <- data.frame(matrix(ncol=4, nrow=1))
+colnames(dev_table) <- c("names", "log_lik", "aic", "coef")
+
+for (i in 1:length(xnames)) { #for each species in spec_list
+  tryCatch({ fit <- glmmTMB(as.formula(paste("diff_ci ~ ", xnames[i], "+ (1|species)")), data=variability_use, family=statmod::tweedie(var.power=2,link.power=0))
+  log_lik <- logLik(fit)[1]
+  aic <- AIC(fit)
+  coef <- unname(fixef(fit)$cond[2])
+  dev_table[i,1] <- xnames[i]
+  dev_table[i,2] <- log_lik
+  dev_table[i,3] <- aic
+  dev_table[i,4] <-coef 
+  
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+
+
+
+dev_table$direction <- ifelse(dev_table$coef > 0, "positive", "negative")
+dev_table$direction <- ifelse(dev_table$names == "Region" | dev_table$names == "Type" | dev_table$names == "adulthab" | dev_table$names == "walshseason" | dev_table$names == "season", NA, dev_table$direction)
+
+dev_table$names <- gsub("_", " ", dev_table$names) 
+
+Figure_3a <- dev_table %>% dplyr::filter(names != "se ct") %>% top_n(-aic,n = 10) %>% 
+  mutate(names = fct_reorder(names, -aic)) %>%
+  ggplot(aes(x=names, y=aic, fill= direction)) +
+    geom_bar(stat="identity", width=.4) +
+    coord_flip() + labs(y = "AIC",x = element_blank()) + scale_fill_manual(values = c("#0058a9", "#ff33cc")) + theme_Publication()+ theme(text = element_text(size=20)) + theme(legend.position = "bottom")
+
+dev_table <- dev_table %>% arrange(aic)
+write.csv(dev_table, "tables/AIC_table_full.csv")
+Figure_3a 
+
+Figure_3b <- variability_use %>% mutate(diff_ci = diff_ci*2, mean_ct = mean_ct*2) %>% ungroup() %>% ggplot(aes(x = mean_ct, y = diff_ci)) + geom_point() + facet_wrap(~Region)+
+  stat_poly_line(aes(x = mean_ct, y = diff_ci)) +
+  stat_poly_eq(use_label(c("p", "R2"))) + geom_point() + theme_Publication() + theme(text = element_text(size=20))
+
+#try showing mixed effects
+#gb
+variability_gb <- variability_use %>% ungroup() %>% filter(Region == "GB") %>% mutate(diff_ci = diff_ci*2, mean_ct = mean_ct*2)
+fit.gb <-  glmmTMB(diff_ci ~ mean_ct + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+fit.null <-  glmmTMB(diff_ci ~ 1 + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+
+variability_gb <- variability_gb %>% 
+  mutate(fit.m = predict(fit.gb, type = "response", re.form = NA),
+         fit.c = predict(fit.gb, type = "response",re.form = NULL), 
+         resid = resid(fit.gb))
+
+    
+library(ggeffects)
+plot(ggpredict(fit.gb, terms = "mean_ct"))
+
+summary(fit.gb)
+#report(fit.gb)
+
+
+chi <- drop1(fit.gb, test = "Chisq")
+chi_p <- chi[2,4]
+a <- anova(fit.gb, fit.null) #report chi square in the main text 
+chi <- a$Chisq[2]
+df <- df.residual(fit.gb)
+exp <- paste("p = ", round(chi_p, 2),"\n", "\U03C7 2 = ", round(chi, 2),"\n", "df = 1")
+
+gb <- variability_gb %>%
+  ggplot(aes(x = mean_ct, y = diff_ci, colour = adulthab)) +
+    geom_point() + theme_Publication()+ labs(subtitle = "GB")+ annotate(geom = "text", x=5, y=5, label=exp, size= 5)+ labs( x = bquote(Mean[CT]), y = bquote(Range[CT])) + scale_colour_manual(values = c("darkgreen", "orange", "#ff33cc"))+ labs(colour = "Adult habitat") +
+    geom_line(aes(y = fit.m, x = mean_ct), linewidth =2, colour = "black")+
+  guides(colour = guide_legend(title.position="top", title.hjust = 0.5))+ theme(text = element_text(size=20))
+
+
+
+#GOM
+variability_gb <- variability_use %>% ungroup() %>% filter(Region == "GOM") %>% mutate(diff_ci = diff_ci*2, mean_ct = mean_ct*2)
+fit.gb <-  glmmTMB(diff_ci ~ mean_ct + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+fit.null <-  glmmTMB(diff_ci ~ 1 + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+
+variability_gb <- variability_gb %>% 
+  mutate(fit.m = predict(fit.gb, type = "response", re.form = NA),
+         fit.c = predict(fit.gb, type = "response",re.form = NULL), 
+         resid = resid(fit.gb))
+
+chi <- drop1(fit.gb, test = "Chisq")
+chi_p <- chi[2,4]
+a <- anova(fit.gb, fit.null) #report chi square in the main text 
+chi <- a$Chisq[2]
+df <- df.residual(fit.gb)
+exp <- paste("p = ", round(chi_p, 2),"\n", "\U03C7 2 = ", round(chi, 2),"\n", "df = 1")
+
+gom <- variability_gb %>%
+  ggplot(aes(x = mean_ct, y = diff_ci, colour = adulthab)) +
+    geom_point() + theme_Publication()+ labs(subtitle = "GOM")+ annotate(geom = "text", x=5, y=5, label=exp, size= 5)+ labs( x = bquote(Mean[CT]), y = bquote(Range[CT])) + scale_colour_manual(values = c("darkgreen", "orange", "#ff33cc"))+ labs(colour = "Adult habitat") +
+    geom_line(aes(y = fit.m, x = mean_ct), size =2, colour = "black")+
+  guides(colour = guide_legend(title.position="top", title.hjust = 0.5))+ theme(text = element_text(size=20))
+
+
+
+
+#MAB
+variability_gb <- variability_use %>% ungroup() %>% filter(Region == "MAB") %>% mutate(diff_ci = diff_ci*2, mean_ct = mean_ct*2)
+fit.gb <-  glmmTMB(diff_ci ~ mean_ct + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+fit.null <-  glmmTMB(diff_ci ~ 1 + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+
+variability_gb <- variability_gb %>% 
+  mutate(fit.m = predict(fit.gb, type = "response", re.form = NA),
+         fit.c = predict(fit.gb, type = "response",re.form = NULL), 
+         resid = resid(fit.gb))
+
+chi <- drop1(fit.gb, test = "Chisq")
+chi_p <- chi[2,4]
+a <- anova(fit.gb, fit.null) #report chi square in the main text 
+chi <- a$Chisq[2]
+df <- df.residual(fit.gb)
+
+summary(fit.gb)
+#report(fit.gb)
+
+exp <- paste("p = ", round(chi_p, 2),"\n", "\U03C7 2 = ", round(chi, 2),"\n", "df = 1")
+
+mab <- variability_gb %>%
+  ggplot(aes(x = mean_ct, y = diff_ci, colour = adulthab)) +
+    geom_point() + theme_Publication()+ labs(subtitle = "MAB")+ annotate(geom = "text", x=6.5, y=5, label=exp, size= 5)+ labs( x = bquote(Mean[CT]), y = bquote(Range[CT])) + scale_colour_manual(values = c("darkgreen", "orange", "#ff33cc"))+ labs(colour = "Adult habitat") +
+    geom_line(aes(y = fit.m, x = mean_ct), size =2, colour = "black")+
+  guides(colour = guide_legend(title.position="top", title.hjust = 0.5))+ theme(text = element_text(size=20))
+
+
+#SNE
+variability_gb <- variability_use %>% ungroup() %>% filter(Region == "SNE") %>% mutate(diff_ci = diff_ci*2, mean_ct = mean_ct*2)
+fit.gb <-  glmmTMB(diff_ci ~ mean_ct + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+fit.null <-  glmmTMB(diff_ci ~ 1 + (1|spp), data=subset(variability_gb), family=statmod::tweedie(var.power=2,link.power=0))
+
+variability_gb <- variability_gb %>% 
+  mutate(fit.m = predict(fit.gb, type = "response", re.form = NA),
+         fit.c = predict(fit.gb, type = "response",re.form = NULL), 
+         resid = resid(fit.gb))
+
+chi <- drop1(fit.gb, test = "Chisq")
+chi_p <- chi[2,4]
+a <- anova(fit.gb, fit.null) #report chi square in the main text 
+chi <- a$Chisq[2]
+df <- df.residual(fit.gb)
+
+exp <- paste("p = ", round(chi_p, 2),"\n", "\U03C7 2 = ", round(chi, 2),"\n", "df = 1")
+
+sne <- variability_gb %>%
+  ggplot(aes(x = mean_ct, y = diff_ci, colour = adulthab)) +
+    geom_point() + theme_Publication()+ labs(subtitle = "SNE")+ annotate(geom = "text", x=5, y=6, label=exp, size= 5)+ labs( x = bquote(Mean[CT]), y = bquote(Range[CT])) + scale_colour_manual(values = c("darkgreen", "orange", "#ff33cc"))+ labs(colour = "Adult habitat") +
+    geom_line(aes(y = fit.m, x = mean_ct), size =2, colour = "black")+
+  guides(colour = guide_legend(title.position="top", title.hjust = 0.5))+ theme(text = element_text(size=20))
+
+
+Figure_3b <- ((gb + gom)/(mab + sne)) + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+Figure_3 <- (Figure_3a + Figure_3b)
+
+Figure_3  <- Figure_3 + plot_annotation(tag_levels = 'A')
+Figure_3
+ggsave(filename = "figures/manuscript/Figure3.png", plot=Figure_3, width = 45, height=25, units=c("cm"), dpi=500)
+
+```
+
+##5.3 Figure 4 PCA
+```{r}
+
+#PCA on less summarized ENV to ask how is the environment different across types 
+env_var <- ecomon_wide  %>% filter(window == "wind1") %>% group_by(Region, Type, yearbin) %>% drop_na(btm_temp, sfc_temp, btm_salt, sfc_salt) %>% dplyr::summarise(
+            bt_ct = (sum(month_proxy*btm_temp))/(sum(btm_temp)),
+            sst_ct = (sum(month_proxy*sfc_temp))/(sum(sfc_temp)), 
+            ssal_ct = (sum(month_proxy*sfc_salt))/(sum(sfc_salt)), 
+            bsal_ct = (sum(month_proxy*btm_salt))/(sum(btm_salt)), 
+            
+            bt_n_sum = length(btm_temp), 
+            bt_mean = mean(btm_temp), 
+            bt_se = sd(btm_temp)/sqrt(bt_n_sum), 
+            bt_conf_interval05 = quantile(btm_temp, probs=.025), 
+            bt_conf_interval95 = quantile(btm_temp, probs=.975), 
+            bt_diff_ci = bt_conf_interval95 - bt_conf_interval05, 
+            bt_ct = (sum(month_proxy*btm_temp))/(sum(btm_temp)),
+            
+            sst_n_sum = length(sfc_temp), 
+            sst_mean = mean(sfc_temp), 
+            sst_se = sd(sfc_temp)/sqrt(sst_n_sum), 
+            sst_conf_interval05 = quantile(sfc_temp, probs=.025), 
+            sst_conf_interval95 = quantile(sfc_temp, probs=.975), 
+            sst_diff_ci = sst_conf_interval95 - sst_conf_interval05, 
+            sst_ct = (sum(month_proxy*sfc_temp))/(sum(sfc_temp)), 
+            
+            bsal_n_sum = length(btm_salt), 
+            bsal_mean = mean(btm_salt), 
+            bsal_se = sd(btm_salt)/sqrt(bsal_n_sum), 
+            bsal_conf_interval05 = quantile(btm_salt, probs=.025), 
+            bsal_conf_interval95 = quantile(btm_salt, probs=.975), 
+            bsal_diff_ci = bsal_conf_interval95 - bsal_conf_interval05, 
+            bsal_ct = (sum(month_proxy*btm_salt))/(sum(btm_salt)),
+            
+            ssal_n_sum = length(sfc_salt), 
+            ssal_mean = mean(sfc_salt), 
+            ssal_se = sd(sfc_salt)/sqrt(ssal_n_sum), 
+            ssal_conf_interval05 = quantile(sfc_salt, probs=.025), 
+            ssal_conf_interval95 = quantile(sfc_salt, probs=.975), 
+            ssal_diff_ci = ssal_conf_interval95 - ssal_conf_interval05, 
+            ct = (sum(month_proxy*sfc_salt))/(sum(sfc_salt)),
+            
+            
+            )
+
+#remove confidence intervals and n_sums 
+#remove overlapping explanatory variables 
+env_var <- env_var  %>% select(Region:bsal_ct, 
+                              bt_mean, bt_se,
+                              sst_mean, sst_se, 
+                              ssal_mean, ssal_se, 
+                              bsal_mean, bsal_se)
+
+
+
+env_var1 <- env_var %>% ungroup %>% select(-Region, -Type, -yearbin)
+colnames(env_var1) <- gsub("_", " ", colnames(env_var1))
+
+Components <- prcomp (env_var1, scale = TRUE) #first two axes capture most of environmental variability 
+#scale = T standardizes the variables 
+summary(Components)
+loads <- as.data.frame(Components$rotation)
+loads <- abs(loads)
+loads %>% arrange(-PC1)
+
+top_loads <- loads %>% slice_max(order_by = PC1, n = 2) 
+top_loads2 <- loads %>% slice_max(order_by = PC2, n = 2)
+
+top_loads <- as.vector(rownames(top_loads))
+top_loads2 <- as.vector(rownames(top_loads2))
+
+top_loads <- c(top_loads, top_loads2)
+top_loads <- top_loads %>% unique()
+  
+#plot it 
+p1 <- autoplot(Components, data = env_var, fill = "Type", shape = "Region", size = 4, position = "jitter")+
+  scale_shape_manual(values = c(21,22,23,24))+
+  scale_fill_manual(values = my_pal, limits = c("SB", "C", "MS", "BASIN", "IS", "BANK"), labels = c("shelf break", "coastal", "mid shelf", "basin", "inner shelf", "bank")) + theme_Publication() + labs(fill = "Province") +guides(fill = guide_legend(override.aes = list(shape=21)))+ theme(text = element_text(size=20))
+
+p2 <- autoplot(Components, data = env_var, alpha = 0, loadings = TRUE,
+              loadings.label = TRUE, loadings.label.size = 4, loadings.color = 'black', loadings.label.color = 'black', loadings.label.vjust = 1, loadings.label.hjust = .5, loadings.label.angle = 45, loadings.label.fontface = "bold") + theme_Publication()+ theme(text = element_text(size=20))
+p2
+# check which layers are relevant
+p2$layers # layers 2 (segment) and 3 (text)
+
+# edit ggplot object geom_segment layer:
+p2$layers[[2]]$data<-p2$layers[[2]]$data[top_loads,]
+
+# edit ggplot object geom_text layer:
+p2$layers[[3]]$data<-p2$layers[[3]]$data[top_loads,]
+
+p2
+
+autoplot(Components, data = env_var, colour = "Region", position = "jitter")
+autoplot(Components, data = env_var, colour = "Region", position = "jitter", loadings = TRUE,
+              loadings.label = TRUE)
+
+
+#add in smax information 
+#calculate percentage of time (total casts by Region/Type) there was an smax 
+
+bin_framea <- as.data.frame(matrix(nrow = 20, ncol = 2))
+colnames(bin_framea) <- c("year", "yearbin")
+bin_framea$year <- 1999:2018
+bin_framea$yearbin <- rep(1:5, each = 4)
+bin_framea <- rbind(bin_framea, c(2019,5))
+
+smax1 <- left_join(smax, bin_framea, by = c("year"))
+
+smax_var <- smax1  %>% group_by(Region, Type, yearbin) %>% dplyr::summarise(
+            n_sum_smax = length(smax),
+            smax_mean = mean(smax),
+            se_smax = sd(smax)/sqrt(n_sum_smax),
+            smax_ct = (sum(month_proxy*smax))/(sum(smax))) %>% unique()
+
+env_var1 <- left_join(env_var, smax_var, by = c("Region", "Type", "yearbin"))
+colnames(env_var1) <- gsub("_", " ", colnames(env_var1))
+
+env_var1[env_var1 == "NaN"] <- NA
+
+env_var1_no_na <- env_var1 %>% drop_na()
+
+env_var1_no_na1 <- env_var1_no_na %>% ungroup %>% select(-Region, -Type, -yearbin, -'n sum smax')
+
+Components <- prcomp (env_var1_no_na1, scale = TRUE) #first two axes capture most of environmental variability 
+#scale = T standardizes the variables 
+summary(Components)
+loads <- as.data.frame(Components$rotation)
+loads <- abs(loads)
+loads %>% arrange(-PC1)
+
+top_loads <- loads %>% slice_max(order_by = PC1, n = 2) 
+top_loads2 <- loads %>% slice_max(order_by = PC2, n = 2)
+
+top_loads <- as.vector(rownames(top_loads))
+top_loads2 <- as.vector(rownames(top_loads2))
+
+top_loads <- c(top_loads, top_loads2)
+top_loads <- top_loads %>% unique()
+  
+#plot it 
+p3 <- autoplot(Components, data = env_var1_no_na, fill = "Type",shape = "Region", size = 4, position = "jitter")+
+  scale_fill_manual(values = my_pal, limits = c("SB", "C", "MS", "BASIN", "IS", "BANK"), guide = "none") + theme_Publication()+ labs(fill = "Province")+
+scale_shape_manual(values = c(21,23,24), guide = "none")+ theme(text = element_text(size=20))
+
+p4 <- autoplot(Components, data = env_var1_no_na, shape = 21, alpha = 0, size = 4, position = "jitter", loadings = TRUE,
+              loadings.label = TRUE, loadings.label.size = 4, loadings.color = 'black', loadings.label.color = 'black', loadings.label.vjust = 1, loadings.label.hjust = .5, loadings.label.angle = 20, loadings.label.fontface = "bold", loadings.label.repel = T)+ theme_Publication()+ theme(text = element_text(size=20))
+
+autoplot(Components, data = env_var1_no_na, colour = "Region", position = "jitter")
+autoplot(Components, data = env_var1_no_na, colour = "Region", position = "jitter", loadings = TRUE,
+              loadings.label = TRUE)
+
+p4
+# check which layers are relevant:
+p4$layers # layers 2 (segment) and 3 (text)
+
+# edit ggplot object geom_segment layer:
+p4$layers[[2]]$data<-p4$layers[[2]]$data[top_loads,]
+
+# edit ggplot object geom_text layer:
+p4$layers[[3]]$data<-p4$layers[[3]]$data[top_loads,]
+
+p4
+
+
+#only plot a few of the loadings 
+#https://stackoverflow.com/questions/73048620/plotting-only-selected-loadings-in-r 
+
+p1 <- p1 + labs(title = "Without smax, with GOM")
+p3 <- p3 + labs(title = "With smax, without GOM")
+
+p <- (p1 + p2)/(p3 + p4)
+
+p <- p + plot_annotation(tag_levels = 'A')+ 
+  plot_layout(guides = "collect")
+
+ggsave(filename = "figures/manuscript/Figure4.png", plot=p, width = 30, height=25, units=c("cm"), dpi=500)
+
+```
+
+##5.4 Figure 5 chisq
+
+```{r}
+
+var_chi <- variability_use %>% ungroup()
+
+var_chi$diff_ci_cat <- ifelse(var_chi$diff_ci <= quantile(var_chi$diff_ci, .25), "lowest_var", ifelse(quantile(var_chi$diff_ci, .25) < var_chi$diff_ci & var_chi$diff_ci <= quantile(var_chi$diff_ci, .5), "low_var", ifelse(quantile(var_chi$diff_ci, .5) < var_chi$diff_ci & var_chi$diff_ci<= quantile(var_chi$diff_ci, .75), "highv_var", "highest_var")))
+
+#Type
+
+cont_variability <- table(var_chi$diff_ci_cat, var_chi$Type)
+print(cont_variability)
+
+chisq.test(cont_variability)
+chisq.test(cont_variability)$expected
+
+test <- fisher.test(cont_variability,workspace = 2e8)
+test
+
+library(ggstatsplot)
+
+Figure_5a <- ggbarstats(
+  var_chi, diff_ci_cat, Type,
+  results.subtitle = FALSE,
+  subtitle = paste0(
+    "Fisher's exact test", ", p-value = ",
+    ifelse(test$p.value < 0.001, "< 0.001", round(test$p.value, 3))
+  )
+) + scale_fill_manual(values = c("#0058a9", "#99ccff", "#ffccff", "#ff33cc"), labels = c("lowest", "low", "high", "highest")) + guides(fill = guide_legend(title = bquote(Range[CT]))) + labs(x = "Province", y = NULL)+ theme(text = element_text(size=20))
+
+
+variability_use %>% ungroup() %>% welch_anova_test(mean_ct ~ Type)
+test <- variability_use %>% ungroup()%>% kruskal_test(mean_ct ~ Type)
+games_test <- variability_use %>% ungroup()%>% games_howell_test(mean_ct ~ Type, detailed = T)
+write.csv(games_test, "tables/games_table.csv")
+games_test <- games_test %>% filter(p.adj < .05)
+
+
+Figure_5b <- variability_use %>% mutate(mean_ct = mean_ct*2) %>% ggplot(aes(x = Type, y = mean_ct)) + geom_boxplot(aes(fill = Type)) +
+  scale_fill_manual(values = my_pal, limits = c("SB", "C", "MS", "BASIN", "IS", "BANK"), labels = c("shelf break", "coastal", "mid shelf", "basin", "inner shelf", "bank")) +
+  stat_compare_means(method = "kruskal")+      # Add global p-value
+  stat_pvalue_manual(
+    games_test, 
+    y.position = 10, step.increase = 0.1,
+    label = "p.adj"
+    ) + labs(y = bquote(Mean[CT]), x = NULL, fill = "Province") + theme_Publication()      + theme(text = element_text(size=20))        
+
+Figure_5 <- Figure_5a + Figure_5b
+Figure_5 <- Figure_5 + plot_annotation(tag_levels = 'A')
+Figure_5
+
+ggsave(filename = "figures/manuscript/Figure5.png", plot=Figure_5, width = 34, height=15, units=c("cm"), dpi=500)
+
+
+#by region - supplement 
+
+cont_variability <- table(var_chi$diff_ci_cat, var_chi$Region)
+print(cont_variability)
+
+chisq.test(cont_variability)
+chisq.test(cont_variability)$expected
+
+test <- fisher.test(cont_variability,workspace = 2e8)
+test
+
+Figure_5a_supp <- ggbarstats(
+  var_chi, diff_ci_cat, Region,
+  results.subtitle = FALSE,
+  subtitle = paste0(
+    "Fisher's exact test", ", p-value = ",
+    ifelse(test$p.value < 0.001, "< 0.001", round(test$p.value, 3))
+  )
+) + scale_fill_manual(values = c("#0058a9", "#99ccff", "#ffccff", "#ff33cc"), labels = c("lowest", "low", "high", "highest")) + guides(fill = guide_legend(title = bquote(Range[CT])))+ theme(text = element_text(size=20))
+
+
+variability_use %>% ungroup() %>% welch_anova_test(mean_ct ~ Region)
+variability_use %>% ungroup() %>% kruskal_test(mean_ct ~ Region)
+games_test <- variability_use %>% ungroup() %>% games_howell_test(mean_ct ~ Region, detailed = T)
+write.csv(games_test, "tables/games_table_region.csv")
+games_test <- games_test %>% filter(p.adj < .05)
+
+
+Figure_5b_supp <- variability_use %>% mutate(mean_ct = mean_ct*2) %>% ggplot(aes(x = Region, y = mean_ct)) + geom_boxplot(aes(fill = Region))  +
+  stat_compare_means(method = "kruskal")+      # Add global p-value
+  stat_pvalue_manual(
+    games_test, 
+    y.position = 10, step.increase = 0.1,
+    label = "p.adj"
+    ) + labs(y = bquote(Mean[CT])) + theme_Publication()   + theme(text = element_text(size=20))           
+
+Figure_5_supp <- Figure_5a_supp + Figure_5b_supp
+Figure_5_supp <- Figure_5_supp + plot_annotation(tag_levels = 'A')
+Figure_5_supp
+
+
+
+ggsave(filename = "figures/supplement/Figure5_Regional_supp.png", plot=Figure_5_supp, width = 25, height=15, units=c("cm"), dpi=500)
+```
+
+##5.5 Figure 6 smax
+```{r}
+library(ggsci)
+
+variability_use_nomaine <- variability_use %>% filter(Region != "GOM")
+
+means <- variability_use %>% group_by(Province) %>% summarise(mean_ct_type = mean(mean_ct*2), sd_ct_type = sd(mean_ct*2), mean_var_type = mean(diff_ci*2), sd_var_type = sd(diff_ci*2))
+
+Figure_6a <- variability_use %>% ungroup() %>% ggplot() + geom_point(aes(y = mean_ct*2, x = diff_ci*2, fill = Province), size = 2, shape = 21, colour = "black", alpha = .3)  + geom_point(data = means, aes(y = mean_ct_type, x = mean_var_type, fill = Province, size = 4), shape = 21)+ 
+    geom_errorbar(data = means, aes(y = mean_ct_type, x = mean_var_type, ymin = mean_ct_type-sd_ct_type,ymax = mean_ct_type+sd_ct_type, colour = Province)) + 
+  geom_errorbar(data = means, aes(y = mean_ct_type, x = mean_var_type, xmin = mean_var_type+sd_var_type,xmax = mean_var_type-sd_var_type, colour = Province)) +
+  scale_fill_manual(values = my_pal, limits = c("SB", "C", "MS", "BASIN", "IS", "BANK"), labels = c("shelf break", "coastal", "mid shelf", "basin", "inner shelf", "bank")) +   scale_colour_manual(values = my_pal, limits = c("SB", "C", "MS", "BASIN", "IS", "BANK"), labels = c("shelf break", "coastal", "mid shelf", "basin", "inner shelf", "bank")) + labs(y = bquote(Mean[CT]), x = bquote(Range[CT])) + theme_Publication() + guides(size = FALSE)+ geom_hline(aes(yintercept = mean(variability_use_nomaine$smax_ct*2))) + annotate("text", x = 3.2, y = mean(variability_use_nomaine$smax_ct*2 + .2), label = "mean salinity maximum intrusion CT", size = 6) + theme(text = element_text(size=20)) 
+Figure_6a
+variability_use$cat_ci <- ifelse(variability_use$diff_ci > 1.5, "variable", "non_variable")
+
+Figure_6b <- variability_use %>% ggplot() + geom_density(aes(y = mean_ct*2, fill = cat_ci), alpha = .75)+ scale_fill_manual(values = c( "#0058a9", "#ff33cc"), labels = c("low", "high")) + guides(fill = guide_legend(title = bquote(Range[CT])))+ theme_Publication() + theme(legend.position = c(.8,.25))+ labs(y = bquote(Mean[CT]))+ theme(text = element_text(size=20))
+
+Figure_6 <- Figure_6a + Figure_6b
+Figure_6 <- Figure_6 + plot_annotation(tag_levels = 'A')
+Figure_6
+
+ggsave(filename = "figures/manuscript/Figure6.png", plot=Figure_6, width = 31, height=15, units=c("cm"), dpi=500)
+
+
+
+
+
+```
+
+#6 Supplemental 
+##6.1 Show we need to bin 
+plot out original data to show we need to bin 
+Temporal coverage 
+```{r}
+
+  #Are the regions consistently sampled every year/season? 
+tallied <- ecomon_wide %>% filter(window == "wind1") %>% group_by(Region, Type, year, season) %>% tally()
+tallied$n <- 1
+
+p1 <- tallied %>% ggplot() + geom_col(aes(x = as.factor(season), y = n)) +  facet_grid(Type ~ Region) + xlab("2-month") + ylab("n years sampled") + ggtitle(label = "Original data") + theme_Publication()+ theme(axis.text.x = element_text(angle = 90))
+
+tallied <- ecomon_wide %>% filter(window == "wind1") %>% group_by(Region, Type, yearbin, season) %>% tally()
+tallied$n <- 1
+
+p2 <- tallied %>% ggplot() + geom_col(aes(x = as.factor(season), y = n)) + facet_grid(Type ~ Region) + xlab("2-month") + ylab("n binned years sampled") + ggtitle(label = "Binned data")+ theme_Publication()+ theme(axis.text.x = element_text(angle = 90)) 
+
+p <- p1 + p2
+
+ggsave(filename = "figures/supplement/bin_needed.png", plot=p, width = 30, height=20, units=c("cm"), dpi=500)
+
+tallied <- ecomon %>% group_by(Region, Type, year, season) %>% tally()
+tallied$n <- 1
+tallied2 <- tallied %>% group_by(season, Region, Type) %>% tally()
+
+tallied2 %>% ggplot() + geom_col(aes(x = as.factor(Region), y = n, fill = Region)) + facet_wrap(~season + Type) + xlab("region")
+
+test_season <- ecomon_wide %>% filter(window == "wind1") %>% filter(Region == "MAB") %>% filter(Type == "IS") %>% select(Region, Type, month_proxy, season, yearbin)
+
+```
+
+##6.2Models
+###6.21 distribution 
+is it gamma distributed? inverse gaussian? 
+```{r}
+library(fitdistrplus)
+library(statmod)
+library(lmtest)
+library(stats)
+
+
+x <- as.vector(variability_use$diff_ci)
+
+fit <- fitdist(x, distr = "gamma", method = "mme")
+
+summary(fit)
+plot(fit)
+
+fit <- fitdist(x, distr = "norm", method = "mme")
+
+summary(fit)
+plot(fit)
+
+descdist(x, boot = 1000)
+
+plot(fit)
+
+
+
+```
+
+###6.2.2 GLM loop
+This is for diff_ci only - can add in se_ct if needed
+Loop through covariates to examine how much deviance in diff_ci is explained by normal and tweedie gamma glm . 
+including species as a random effect
+```{r}
+#regular normal glm - we checked the distribution above and gaussian is okay (normal-ish residuals)
+specs <- variability_use %>% ungroup %>% dplyr::select(Region:smax_ct)
+specs <- colnames(specs)
+specs <- specs[specs != "diff_ci"]
+specs <- specs[specs != "species"]
+xnames <- c("adulthab", specs)
+
+#with species as a random effect - glmer 
+#regular normal glm - we checked the distribution above and gaussian is okay (normal-ish residuals)
+specs <- variability_use %>% ungroup %>% dplyr::select(Region:smax_ct)
+specs <- colnames(specs)
+specs <- specs[specs != "diff_ci"]
+specs <- specs[specs != "species"]
+xnames <- c("adulthab", specs)
+
+
+dev_table <- data.frame(matrix(ncol=3, nrow=1))
+colnames(dev_table) <- c("names", "log_lik", "aic")
+
+for (i in 1:length(xnames)) { #for each species in spec_list
+  tryCatch({ fit <- glmmTMB(as.formula(paste("diff_ci ~ ", xnames[i], "+ (1|species)")), data=variability_use, family = gaussian)
+  log_lik <- logLik(fit)[1]
+  aic <- AIC(fit)
+  dev_table[i,1] <- xnames[i]
+  dev_table[i,2] <- log_lik
+  dev_table[i,3] <- aic
+  
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+
+#tweedie 
+
+dev_table2 <- data.frame(matrix(ncol=3, nrow=1))
+colnames(dev_table2) <- c("names", "log_lik", "aic")
+
+for (i in 1:length(xnames)) { #for each species in spec_list
+  use <- variability_use %>% ungroup() %>% select(diff_ci, species, xnames[i])
+  use <- use %>% drop_na() 
+  tryCatch({ fit <- glmmTMB(as.formula(paste("diff_ci ~ ", xnames[i], "+ (1|species)")), data=use, family=statmod::tweedie(var.power=2,link.power=0))
+  log_lik <- logLik(fit)[1]
+  aic <- AIC(fit)
+  dev_table2[i,1] <- xnames[i]
+  dev_table2[i,2] <- log_lik
+  dev_table2[i,3] <- aic
+  
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+
+#plot comparison
+dev_table$distribution <- "gaussian"
+dev_table2$distribution <- "tweedie gamma"
+
+dev <- rbind(dev_table, dev_table2)
+
+a <- dev %>% pivot_longer(log_lik:aic, values_to = "metric") %>% 
+  ggplot(aes(x = distribution, y = metric)) +geom_boxplot()+
+  stat_compare_means(method = "wilcox")+ stat_summary(fun.y=mean, colour="darkred", geom="point", hape=18, size=3,show_guide = FALSE)+ stat_summary(fun.y=mean, colour="red", geom="text", show_guide = FALSE, 
+               vjust=2, aes( label=round(..y.., digits=1))) + facet_wrap(~name) + theme_Publication()
+a
+
+ggsave(filename = "figures/supplement/distribution_compare_aic_loglik.png", plot=a, width = 15, height=10, units=c("cm"), dpi=500)
+
+
+```
+This tells us that tweedie gamma fits the data better (in terms of log likelihood and aic)
+
+###3.2.3 species ct plots 
+plot out central tendency for each species including a 95% confidence interval. save these figures for review
+```{r}
+summary_ct <- read.csv("data/summary_ct_bootstrapped.csv")
+specnames_ct <- unique(summary_ct$spp)
+summary_ct$unique_id <- paste(summary_ct$spp, summary_ct$Region, summary_ct$Type, sep = "_")
+
+summary_ct_no_wrap <- summary_ct %>% dplyr::filter(!(unique_id %in% ecomon_grouped_long_select$wrapper_id))
+specnames_ct <- unique(summary_ct_no_wrap$spp)
+summary_ct_no_wrap <- summary_ct_no_wrap %>% mutate(yearbin_coded = recode(bin,"1" = "1992-2002", "2" = "2003-2006", "3" = "2007-2010", "4" ="2011-2014", "5" ="2015-2019"))
+
+for (i in 1:length(specnames_ct)) { #for each species in spec_list
+  name <- specnames_ct[i]
+  dat <- na.omit(summary_ct_no_wrap) %>% ungroup() %>% dplyr::filter(spp == specnames_ct[i]) 
+  p <- ggplot(dat) + geom_blank(aes(x = yearbin_coded, y = mean_ct*2))+ geom_ribbon(aes(x = bin, ymin = conf_interval05*2,
+                   ymax = conf_interval95*2), alpha = .5) +  geom_line(aes(x = bin, y = mean_ct*2), size = 1) + facet_grid(Type~ Region) + ggtitle(name) + theme_Publication() + labs(y = bquote(Mean[CT]), x = "year bin")+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+   ggsave(filename= paste("figures/supplement/bootstrapped/", name, ".jpg"), plot=p, width = 15, height=10, units=c("cm"), dpi=500)
+ 
+  print(p) 
+  
+} 
+
+```
+
+##6.3 species ct plots 
+plot out central tendency for each species including a 95% confidence interval. save these figures for review
+```{r}
+specnames_ct <- unique(summary_ct$spp)
+summary_ct$unique_id <- paste(summary_ct$spp, summary_ct$Region, summary_ct$Type, sep = "_")
+
+summary_ct_no_wrap <- summary_ct %>% dplyr::filter(!(unique_id %in% ecomon_grouped_long_select$wrapper_id))
+specnames_ct <- unique(summary_ct_no_wrap$spp)
+summary_ct_no_wrap <- summary_ct_no_wrap %>% mutate(yearbin_coded = recode(bin,"1" = "1992-2002", "2" = "2003-2006", "3" = "2007-2010", "4" ="2011-2014", "5" ="2015-2019"))
+
+for (i in 1:length(specnames_ct)) { #for each species in spec_list
+  name <- specnames_ct[i]
+  dat <- na.omit(summary_ct_no_wrap) %>% ungroup() %>% dplyr::filter(spp == specnames_ct[i]) 
+  p <- ggplot(dat) + geom_blank(aes(x = yearbin_coded, y = mean_ct*2))+ geom_ribbon(aes(x = bin, ymin = conf_interval05*2,
+                   ymax = conf_interval95*2), alpha = .5) +  geom_line(aes(x = bin, y = mean_ct*2), size = 1) + facet_grid(Type~ Region) + ggtitle(name) + theme_Publication() + labs(y = bquote(Mean[CT]), x = "year bin")+ theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+   ggsave(filename= paste("figures/supplement/bootstrapped/", name, ".jpg"), plot=p, width = 15, height=10, units=c("cm"), dpi=500)
+ 
+  print(p) 
+  
+} 
+
+```
